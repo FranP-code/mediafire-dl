@@ -21,11 +21,13 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 
 # Destination folder name inside ~/Downloads on THIS MAC.
-FOLDER_NAME=""
+FOLDER_NAME="drawn together"
 
 # MediaFire folder/file URLs to download.
 URLS=(
-  ""
+  "https://www.mediafire.com/folder/tefje4xp55j18/LCDLD+T1",
+  "https://www.mediafire.com/folder/82axxhsso9js8/LCDLD+T2",
+  "https://www.mediafire.com/folder/kvlz1xf3ywspz/LCDLD+T3"
 )
 
 # ---------------------------------------------------------------------------
@@ -73,12 +75,16 @@ fi
 mkdir -p "${LOCAL_DEST}"
 
 # --- download into container filesystem (NO bind mount, nothing on host) ----
-CID="$(docker create "${IMAGE_NAME}" \
+# -t allocates a pseudo-TTY so mdrs progress bars render and stream live
+# through `docker start -a`. Fixed --name makes orphans easy to find/kill
+# after a disconnect: docker rm -f mediafire-dl-tmp
+docker rm -f mediafire-dl-tmp >/dev/null 2>&1 || true
+CID="$(docker create -t --name mediafire-dl-tmp "${IMAGE_NAME}" \
   -o /downloads -m "${MAX_CONCURRENT}" -t "${TRIES}" \
   "${FILTERED_URLS[@]}")"
 trap 'docker rm -f "${CID}" >/dev/null 2>&1 || true' EXIT
 
-log "downloading inside remote container ${CID}..."
+log "downloading inside remote container ${CID}... (Ctrl-C kills + cleans up)"
 docker start -a "${CID}"
 
 # --- move files back to this Mac (container removed after = move, not copy) --
