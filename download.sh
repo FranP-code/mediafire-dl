@@ -72,7 +72,15 @@ else
   log "image ${IMAGE_NAME} present on remote daemon."
 fi
 
-mkdir -p "${LOCAL_DEST}"
+mkdir -p "${LOCAL_DEST}" 2>/dev/null || fail "cannot create ${LOCAL_DEST}."
+
+# Fail fast: verify writability BEFORE the (possibly long) remote download.
+# NTFS volumes mount read-only on stock macOS — use an internal/APFS/exFAT
+# path for MAC_DIR, or reformat/install an NTFS driver out of band.
+if ! touch "${LOCAL_DEST}/.mediafire-dl-write-test" 2>/dev/null; then
+  fail "LOCAL_DEST not writable: ${LOCAL_DEST} (external NTFS drives are read-only on macOS; set MAC_DIR to a writable path)"
+fi
+rm -f "${LOCAL_DEST}/.mediafire-dl-write-test"
 
 # --- download into container filesystem (NO bind mount, nothing on host) ----
 # -t allocates a pseudo-TTY so mdrs progress bars render and stream live
