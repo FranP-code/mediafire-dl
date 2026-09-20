@@ -81,11 +81,11 @@ trap 'docker rm -f "${CID}" >/dev/null 2>&1 || true' EXIT
 log "downloading inside remote container ${CID}..."
 docker start -a "${CID}"
 
-# --- stream files back to this Mac ------------------------------------------
-log "copying to Mac: ${LOCAL_DEST}"
+# --- move files back to this Mac (container removed after = move, not copy) --
+log "moving to Mac: ${LOCAL_DEST}"
 docker cp "${CID}:/downloads/." "${LOCAL_DEST}/"
 
 trap - EXIT
 docker rm -f "${CID}" >/dev/null 2>&1 || true
 
-log "done. Files are in ${LOCAL_DEST}"
+log "done. Files moved to ${LOCAL_DEST} (container removed, nothing left on server)"
