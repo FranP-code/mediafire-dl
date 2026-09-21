@@ -59,6 +59,7 @@ Same buffer design, but the download runs detached: start it, close the Mac, fet
 ./mf.sh logs           # stream progress (Ctrl-C detaches, download continues)
 ./mf.sh fetch          # move finished files to ~/Downloads/<folder>, remove job subdir, remove job
 ./mf.sh fetch --force  # move partial files now (kills a running job)
+./mf.sh fetch-all      # move ALL finished jobs (skips running ones)
 ./mf.sh retry          # re-run only the failed files of a finished job (same subdir)
 ./mf.sh kill           # abort + remove job, remove its subdir
 ```

@@ -189,23 +189,31 @@ cmd_fetch() {
   [[ "${2:-}" == "--force" || "${1:-}" == "--force" ]] && force="true"
   [[ "${1:-}" == "--force" ]] && job=""
   job="$(resolve_job "${job}")"
+  fetch_one "${job}" "${force}"
+}
+
+# Fetch a single resolved job container. Returns nonzero (no exit) when the
+# job is still running and force is off, so fetch-all can skip and continue.
+fetch_one() {
+  local job="$1" force="$2" folder dest running srcdir slug
   running="$(docker inspect --format '{{.State.Running}}' "${job}")"
   if [[ "${running}" == "true" && "${force}" != "true" ]]; then
-    fail "job ${job} is still running. Wait + ./mf.sh logs, or ./mf.sh fetch ${job} --force for a partial move (kills the job)."
+    printf '[mf] ERROR: job %s is still running. Wait + ./mf.sh logs, or ./mf.sh fetch %s --force for a partial move (kills the job).\n' "${job}" "${job}" >&2
+    return 1
   fi
   folder="$(job_folder "${job}")"
-  [[ -n "${folder}" ]] || fail "job ${job} has no folder label; refusing to guess the destination."
+  [[ -n "${folder}" ]] || { printf '[mf] ERROR: job %s has no folder label; refusing to guess the destination.\n' "${job}" >&2; return 1; }
   dest="${MAC_DIR%/}/${folder}"
-  mkdir -p "${dest}" 2>/dev/null || fail "cannot create ${dest}."
+  mkdir -p "${dest}" 2>/dev/null || { printf '[mf] ERROR: cannot create %s.\n' "${dest}" >&2; return 1; }
   if ! touch "${dest}/.mediafire-dl-write-test" 2>/dev/null; then
-    fail "LOCAL dest not writable: ${dest} (external NTFS drives are read-only on macOS)"
+    printf '[mf] ERROR: LOCAL dest not writable: %s (external NTFS drives are read-only on macOS)\n' "${dest}" >&2
+    return 1
   fi
   rm -f "${dest}/.mediafire-dl-write-test"
-  local srcdir slug
   srcdir="$(job_path "${job}")"
   slug="$(sanitize "${folder}")"
   log "moving ${job} (${srcdir}) -> ${dest}"
-  docker cp "${job}:${srcdir}/." "${dest}/"
+  docker cp "${job}:${srcdir}/." "${dest}/" || return 1
   # Sentinel can only arrive via the legacy /downloads fallback — keep it off the Mac.
   rm -f "${dest}/.mediafire-buffer"
   # Remove this job's subdir only; legacy fallback cleans nothing (shared root).
@@ -214,6 +222,23 @@ cmd_fetch() {
   fi
   docker rm -f "${job}" >/dev/null 2>&1 || true
   log "done. ${folder} moved to ${dest} (job removed)"
+}
+
+cmd_fetch_all() {
+  need_docker
+  local job ok=0 skipped=0 failed=0
+  while IFS= read -r job; do
+    [[ -n "${job}" ]] || continue
+    if [[ "$(docker inspect --format '{{.State.Running}}' "${job}")" == "true" ]]; then
+      log "skipping ${job} (still running)"
+      skipped=$((skipped + 1))
+    elif fetch_one "${job}" "false"; then
+      ok=$((ok + 1))
+    else
+      failed=$((failed + 1))
+    fi
+  done < <(docker ps -a --filter "label=${JOB_LABEL}" --format '{{.Names}}')
+  log "fetch-all: ${ok} moved, ${skipped} skipped (running), ${failed} failed."
 }
 
 cmd_kill() {
@@ -277,6 +302,7 @@ Usage: ./mf.sh <command> [job] [--force]
   logs [job]     stream progress (Ctrl-C detaches, download continues)
   fetch [job]    move finished files to ~/Downloads/<folder>, remove job
   fetch [job] --force   move partial files now (kills a running job)
+  fetch-all        move ALL finished jobs (skips running ones)
   retry [job]    re-run only the failed files of a finished job (same subdir)
   kill [job]     abort + remove job (partial files discarded)
 
@@ -289,6 +315,7 @@ case "${1:-}" in
   status) shift; cmd_status "$@" ;;
   logs)   shift; cmd_logs "$@" ;;
   fetch)  shift; cmd_fetch "$@" ;;
+  fetch-all) shift; cmd_fetch_all "$@" ;;
   retry)  shift; cmd_retry "$@" ;;
   kill)   shift; cmd_kill "$@" ;;
   *) usage; exit 1 ;;
