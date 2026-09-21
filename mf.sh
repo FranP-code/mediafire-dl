@@ -14,9 +14,10 @@
 #
 # Other commands: ./mf.sh kill   (abort + clean up)
 #
-# Downloads land in the HDD-backed buffer on the VM (/mnt/mediafire, an NFS
-# mount from the Proxmox host — never the VM's own disk), and fetch streams
-# them to this Mac via `docker cp`, then empties the buffer.
+# Downloads land in the job's own HDD buffer subdir on the VM
+# (/mnt/mediafire/<slug>/, an NFS mount from the Proxmox host — never the
+# VM's own disk), so concurrent jobs can't mix files. Fetch streams them to
+# this Mac via `docker cp`, then removes the subdir.
 #
 # Requires: docker CLI with context/host pointing at the homelab, e.g.
 #   docker context use homelab   # ssh://franp@192.168.1.10
@@ -28,11 +29,14 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 
 # Destination folder name inside ~/Downloads on THIS MAC.
-FOLDER_NAME=""
+FOLDER_NAME="ted"
 
 # MediaFire folder/file URLs to download.
-URLS=(
-  ""
+URLS=( 
+"https://www.mediafire.com/file/nm9enghvmwrb9zw/t12.part1.rar/file", 
+"https://www.mediafire.com/file/vng35xwdbwqe0di/t12.part2.rar/file", 
+"https://www.mediafire.com/file/s1jdwsq3ownk4un/t215.part1.rar/file", 
+"https://www.mediafire.com/file/6vc7sxd23duasjm/t215.part2.rar/file"
 )
 
 # ---------------------------------------------------------------------------
@@ -116,11 +120,24 @@ need_buffer() {
     || fail "HDD buffer not mounted on remote daemon (${REMOTE_BUFFER}). Mount it: 192.168.1.11:/mnt/pve/HDD/mediafire"
 }
 
-# `docker rm` does NOT clean bind contents — empty the buffer explicitly
-# (.[!.]* covers dotfiles but can never match . or ..; the sentinel is
-# deleted by the globs and recreated right after).
-empty_buffer() {
-  docker run --rm --entrypoint sh -v "${REMOTE_BUFFER}:/downloads" "${IMAGE_NAME}" -c 'rm -rf /downloads/* /downloads/.[!.]*; touch /downloads/.mediafire-buffer' >/dev/null 2>&1 || true
+# `docker rm` does NOT clean bind contents — remove the job's own subdir only
+# (slug is sanitized to [a-z0-9-]; buffer root + sentinel stay untouched).
+cleanup_job_dir() {
+  local slug="$1"
+  [[ -n "${slug}" ]] || return 0
+  docker run --rm --entrypoint sh -v "${REMOTE_BUFFER}:/buffer" "${IMAGE_NAME}" -c "rm -rf /buffer/${slug}" >/dev/null 2>&1 || true
+}
+
+# In-container download dir for a job: its own /buffer/<slug>.
+# Falls back to /downloads for jobs started before per-folder subdirs.
+job_path() {
+  local slug
+  slug="$(sanitize "$(job_folder "$1")")"
+  if [[ -n "${slug}" ]] && docker run --rm --entrypoint test -v "${REMOTE_BUFFER}:/buffer" "${IMAGE_NAME}" -d "/buffer/${slug}" >/dev/null 2>&1; then
+    printf '/buffer/%s' "${slug}"
+  else
+    printf '/downloads'
+  fi
 }
 
 cmd_start() {
@@ -128,26 +145,24 @@ cmd_start() {
   need_docker
   ensure_image
   need_buffer
-  local job urls
+  local job slug urls
   job="$(job_name)"
+  slug="$(sanitize "${FOLDER_NAME}")"
+  [[ -n "${slug}" ]] || fail "FOLDER_NAME sanitizes to empty (use letters/digits)."
   if docker inspect "${job}" >/dev/null 2>&1; then
     fail "job ${job} already exists. ./mf.sh status | ./mf.sh logs | ./mf.sh fetch | ./mf.sh kill"
   fi
-  # The buffer is shared: refuse a second job so downloads can't mix.
-  if docker ps -a --filter "label=${JOB_LABEL}" --format '{{.Names}}' | grep -q .; then
-    fail "another job exists (shared buffer). ./mf.sh status, then fetch/kill it first."
-  fi
   mapfile -t urls < <(filtered_urls)
   log "starting detached job ${job} (${#urls[@]} urls) — safe to sleep/close this Mac."
+  log "more jobs? Set another FOLDER_NAME + URLS and start again — each gets its own buffer subdir."
   docker create -t --name "${job}" \
     --label "${JOB_LABEL}" \
     --label "mediafire-dl.folder=${FOLDER_NAME}" \
-    -v "${REMOTE_BUFFER}:/downloads" \
-    "${IMAGE_NAME}" \
-    -o /downloads -m "${MAX_CONCURRENT}" -t "${TRIES}" \
-    "${urls[@]}" >/dev/null
+    -v "${REMOTE_BUFFER}:/buffer" \
+    --entrypoint sh "${IMAGE_NAME}" \
+    -c "mkdir -p /buffer/${slug} && exec mdrs -o /buffer/${slug} -m ${MAX_CONCURRENT} -t ${TRIES} ${urls[*]}" >/dev/null
   docker start "${job}" >/dev/null
-  log "running. Watch: ./mf.sh logs | Fetch later: ./mf.sh fetch"
+  log "running. Watch: ./mf.sh logs ${job} | Fetch later: ./mf.sh fetch ${job}"
 }
 
 cmd_status() {
@@ -187,23 +202,32 @@ cmd_fetch() {
     fail "LOCAL dest not writable: ${dest} (external NTFS drives are read-only on macOS)"
   fi
   rm -f "${dest}/.mediafire-dl-write-test"
-  log "moving ${job} -> ${dest}"
-  docker cp "${job}:/downloads/." "${dest}/"
-  # Exclude the sentinel from the move aftermath: empty the whole buffer.
-  # (cp already skipped nothing — sentinel would otherwise land on the Mac.)
+  local srcdir slug
+  srcdir="$(job_path "${job}")"
+  slug="$(sanitize "${folder}")"
+  log "moving ${job} (${srcdir}) -> ${dest}"
+  docker cp "${job}:${srcdir}/." "${dest}/"
+  # Sentinel can only arrive via the legacy /downloads fallback — keep it off the Mac.
   rm -f "${dest}/.mediafire-buffer"
-  empty_buffer
+  # Remove this job's subdir only; legacy fallback cleans nothing (shared root).
+  if [[ "${srcdir}" == /buffer/* ]]; then
+    cleanup_job_dir "${slug}"
+  fi
   docker rm -f "${job}" >/dev/null 2>&1 || true
-  log "done. Files moved to ${dest} (job removed, buffer emptied)"
+  log "done. ${folder} moved to ${dest} (job removed)"
 }
 
 cmd_kill() {
   need_docker
-  local job
+  local job srcdir slug
   job="$(resolve_job "${1:-}")"
+  srcdir="$(job_path "${job}")"
+  slug="$(sanitize "$(job_folder "${job}")")"
   docker rm -f "${job}" >/dev/null
-  empty_buffer
-  log "killed + removed ${job} (partial files discarded, buffer emptied)"
+  if [[ "${srcdir}" == /buffer/* ]]; then
+    cleanup_job_dir "${slug}"
+  fi
+  log "killed + removed ${job} (partial files discarded)"
 }
 
 usage() {

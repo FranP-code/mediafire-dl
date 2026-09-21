@@ -47,6 +47,11 @@ REMOTE_BUFFER="/mnt/mediafire"
 log()  { printf '[mediafire-dl] %s\n' "$*"; }
 fail() { printf '[mediafire-dl] ERROR: %s\n' "$*" >&2; exit 1; }
 
+sanitize() {
+  # "Estoy En La Banda!" -> "estoy-en-la-banda" (safe for container/paths)
+  printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9' '-' | sed -e 's/^-\{1,\}//' -e 's/-\{1,\}$//' | cut -c1-60
+}
+
 # --- validation -------------------------------------------------------------
 [[ -n "${FOLDER_NAME}" ]] || fail 'FOLDER_NAME is empty. Set it, e.g. FOLDER_NAME="my-collection".'
 
@@ -84,33 +89,35 @@ if ! touch "${LOCAL_DEST}/.mediafire-dl-write-test" 2>/dev/null; then
 fi
 rm -f "${LOCAL_DEST}/.mediafire-dl-write-test"
 
-# --- download into the HDD buffer (bind mount, never the VM disk) ---------
+# --- download into the job's own HDD buffer subdir (never the VM disk) ----
+# Layout: <buffer>/<slug>/ per job, so concurrent jobs can't mix files.
+# The job/container name derives from the destination folder:
+#   FOLDER_NAME="Estoy En La Banda" -> mediafire-dl-estoy-en-la-banda
 # Guard first: without the NFS mount, Docker would auto-create a plain dir
 # on the VM disk and download there. The sentinel proves the real buffer.
 # -t allocates a pseudo-TTY so mdrs progress bars render and stream live
-# through `docker start -a`. Fixed --name makes orphans easy to find/kill
-# after a disconnect: docker rm -f mediafire-dl-tmp
-docker run --rm --entrypoint test -v "${REMOTE_BUFFER}:/downloads" "${IMAGE_NAME}" -f /downloads/.mediafire-buffer \
+# through `docker start -a`.
+SLUG="$(sanitize "${FOLDER_NAME}")"
+[[ -n "${SLUG}" ]] || fail "FOLDER_NAME sanitizes to empty (use letters/digits)."
+JOB="mediafire-dl-${SLUG}"
+docker run --rm --entrypoint test -v "${REMOTE_BUFFER}:/buffer" "${IMAGE_NAME}" -f /buffer/.mediafire-buffer \
   || fail "HDD buffer not mounted on remote daemon (${REMOTE_BUFFER}). Mount it: 192.168.1.11:/mnt/pve/HDD/mediafire"
-docker rm -f mediafire-dl-tmp >/dev/null 2>&1 || true
-CID="$(docker create -t --name mediafire-dl-tmp -v "${REMOTE_BUFFER}:/downloads" "${IMAGE_NAME}" \
-  -o /downloads -m "${MAX_CONCURRENT}" -t "${TRIES}" \
-  "${FILTERED_URLS[@]}")"
+docker rm -f "${JOB}" >/dev/null 2>&1 || true
+CID="$(docker create -t --name "${JOB}" -v "${REMOTE_BUFFER}:/buffer" --entrypoint sh "${IMAGE_NAME}" \
+  -c "mkdir -p /buffer/${SLUG} && exec mdrs -o /buffer/${SLUG} -m ${MAX_CONCURRENT} -t ${TRIES} ${FILTERED_URLS[*]}")"
 trap 'docker rm -f "${CID}" >/dev/null 2>&1 || true' EXIT
 
-log "downloading inside remote container ${CID}... (Ctrl-C kills + cleans up)"
+log "downloading inside remote container ${JOB} (${CID})... (Ctrl-C kills + cleans up)"
 docker start -a "${CID}"
 
-# --- move files back to this Mac, then empty the buffer -------------------
+# --- move files back to this Mac, then remove the job's buffer subdir -----
 log "moving to Mac: ${LOCAL_DEST}"
-docker cp "${CID}:/downloads/." "${LOCAL_DEST}/"
-rm -f "${LOCAL_DEST}/.mediafire-buffer"   # sentinel must not land on the Mac
+docker cp "${CID}:/buffer/${SLUG}/." "${LOCAL_DEST}/"
 
 trap - EXIT
-# `docker rm` does NOT clean bind contents — empty the buffer explicitly
-# (.[!.]* covers dotfiles but can never match . or ..; the sentinel is
-# deleted by the globs and recreated right after).
-docker run --rm --entrypoint sh -v "${REMOTE_BUFFER}:/downloads" "${IMAGE_NAME}" -c 'rm -rf /downloads/* /downloads/.[!.]*; touch /downloads/.mediafire-buffer' || true
+# `docker rm` does NOT clean bind contents — remove this job's subdir only
+# (SLUG is sanitized to [a-z0-9-], root + sentinel stay untouched).
+docker run --rm --entrypoint sh -v "${REMOTE_BUFFER}:/buffer" "${IMAGE_NAME}" -c "rm -rf /buffer/${SLUG}" || true
 docker rm -f "${CID}" >/dev/null 2>&1 || true
 
-log "done. Files moved to ${LOCAL_DEST} (container removed, buffer emptied)"
+log "done. ${FOLDER_NAME} moved to ${LOCAL_DEST} (job ${JOB} removed, its buffer subdir cleaned)"

@@ -5,7 +5,7 @@ Batch-download MediaFire folders/files with [`mediafire_rs`](https://github.com/
 ## How it works
 
 - `Dockerfile` builds `mdrs` from git main via a multi-stage build (`rust:1-bookworm` → `debian:bookworm-slim`). The image is built **on the homelab daemon**, never locally.
-- `download.sh` downloads inside one remote container bound to the HDD buffer (`/mnt/mediafire` in the VM → `/downloads` in the container), then `docker cp`s the result to `~/Downloads/<FOLDER_NAME>` on this Mac, empties the buffer, and removes the container.
+- `download.sh` downloads inside one remote container into its own buffer subdir (`/mnt/mediafire/<folder-slug>` in the VM → `/buffer/<folder-slug>` in the container), then `docker cp`s the result to `~/Downloads/<FOLDER_NAME>` on this Mac, removes the subdir, and removes the container. The job name derives from the folder: `FOLDER_NAME="Estoy En La Banda"` → `mediafire-dl-estoy-en-la-banda`.
 - Remote daemon: `192.168.1.10` (Docker VM) via `ssh://franp@192.168.1.10`.
 
 ## Buffer (HDD, not VM disk)
@@ -14,7 +14,8 @@ Batch-download MediaFire folders/files with [`mediafire_rs`](https://github.com/
   `/mnt/pve/HDD/mediafire 192.168.1.10(rw,sync,no_subtree_check,no_root_squash)` (`no_root_squash` is safe here: single dir, single client IP; the container runs as root).
 - VM mount (`/etc/fstab`): `192.168.1.11:/mnt/pve/HDD/mediafire /mnt/mediafire nfs defaults,_netdev 0 0` (needs `nfs-common` in the VM).
 - A sentinel file `.mediafire-buffer` lives in the buffer dir. The script verifies it inside the container before downloading — if the NFS mount ever drops, it fails loudly instead of silently downloading onto the VM disk (Docker auto-creates missing bind sources).
-- After a successful run the buffer is emptied (sentinel recreated). After Ctrl-C, partials stay in the buffer — next run overwrites same-named files; empty manually if needed.
+- After a successful run the job's subdir is removed (sentinel stays). After Ctrl-C, partials stay in the job's subdir — next run with the same folder overwrites same-named files; empty manually if needed.
+- Concurrent jobs are isolated: each uses its own `<folder-slug>` subdir. Start another by setting a different `FOLDER_NAME` + `URLS` and running again.
 
 ## Prerequisites (Mac)
 
@@ -63,7 +64,7 @@ Same buffer design, but the download runs detached: start it, close the Mac, fet
 
 Notes:
 
-- One job at a time — the buffer is shared, so `start` refuses while another job exists.
+- Run several jobs at once: each `FOLDER_NAME` gets its own job (`mediafire-dl-<slug>`) and its own buffer subdir — they can't mix. `status` lists them all.
 - `fetch` refuses while the job is still running unless `--force`.
 - If the Mac disconnects mid-download, the job keeps running; reattach with `./mf.sh logs`, finish with `./mf.sh fetch`. Orphan cleanup: `./mf.sh kill`.
 
