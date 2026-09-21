@@ -1,12 +1,20 @@
 # mediafire-dl
 
-Batch-download MediaFire folders/files with [`mediafire_rs`](https://github.com/nickoehler/mediafire_rs) (`mdrs`) running in Docker **on the homelab**. Nothing heavy runs on the Mac — only the Docker client CLI, talking to the remote daemon over SSH. Files **never land on the server**: they download into the container's filesystem and stream straight back to this Mac via `docker cp`.
+Batch-download MediaFire folders/files with [`mediafire_rs`](https://github.com/nickoehler/mediafire_rs) (`mdrs`) running in Docker **on the homelab**. Nothing heavy runs on the Mac — only the Docker client CLI, talking to the remote daemon over SSH. Files download into an **HDD-backed buffer** bind-mounted into the container (never the VM's own disk), stream back to this Mac via `docker cp`, and the buffer is emptied afterwards.
 
 ## How it works
 
 - `Dockerfile` builds `mdrs` from git main via a multi-stage build (`rust:1-bookworm` → `debian:bookworm-slim`). The image is built **on the homelab daemon**, never locally.
-- `download.sh` loops over your `URLS` array, downloads inside one remote container (**no bind mount**, so no host files), then `docker cp`s the result to `~/Downloads/<FOLDER_NAME>` on this Mac and removes the container.
+- `download.sh` downloads inside one remote container bound to the HDD buffer (`/mnt/mediafire` in the VM → `/downloads` in the container), then `docker cp`s the result to `~/Downloads/<FOLDER_NAME>` on this Mac, empties the buffer, and removes the container.
 - Remote daemon: `192.168.1.10` (Docker VM) via `ssh://franp@192.168.1.10`.
+
+## Buffer (HDD, not VM disk)
+
+- Host dir: `/mnt/pve/HDD/mediafire` (dedicated single-purpose dir — the whole HDD is deliberately NOT exposed). Exported via NFS scoped to the Docker VM only:
+  `/mnt/pve/HDD/mediafire 192.168.1.10(rw,sync,no_subtree_check,no_root_squash)` (`no_root_squash` is safe here: single dir, single client IP; the container runs as root).
+- VM mount (`/etc/fstab`): `192.168.1.11:/mnt/pve/HDD/mediafire /mnt/mediafire nfs defaults,_netdev 0 0` (needs `nfs-common` in the VM).
+- A sentinel file `.mediafire-buffer` lives in the buffer dir. The script verifies it inside the container before downloading — if the NFS mount ever drops, it fails loudly instead of silently downloading onto the VM disk (Docker auto-creates missing bind sources).
+- After a successful run the buffer is emptied (sentinel recreated). After Ctrl-C, partials stay in the buffer — next run overwrites same-named files; empty manually if needed.
 
 ## Prerequisites (Mac)
 
@@ -39,6 +47,25 @@ URLS=(
 ```
 
 Optional knobs in `download.sh`: `MAX_CONCURRENT` (`-m`, default 10), `TRIES` (`-t`, default 1), `IMAGE_NAME`, `MAC_DIR` (default `$HOME/Downloads`).
+
+## Detached mode (`mf.sh`) — Mac can sleep
+
+Same buffer design, but the download runs detached: start it, close the Mac, fetch later.
+
+```bash
+./mf.sh start          # needs FOLDER_NAME + URLS set in mf.sh; Mac can sleep after this
+./mf.sh status         # list jobs (running / exited)
+./mf.sh logs           # stream progress (Ctrl-C detaches, download continues)
+./mf.sh fetch          # move finished files to ~/Downloads/<folder>, empty buffer, remove job
+./mf.sh fetch --force  # move partial files now (kills a running job)
+./mf.sh kill           # abort + remove job, empty buffer
+```
+
+Notes:
+
+- One job at a time — the buffer is shared, so `start` refuses while another job exists.
+- `fetch` refuses while the job is still running unless `--force`.
+- If the Mac disconnects mid-download, the job keeps running; reattach with `./mf.sh logs`, finish with `./mf.sh fetch`. Orphan cleanup: `./mf.sh kill`.
 
 ## Why remote?
 

@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 #
 # Download MediaFire folders/files via mediafire_rs running in Docker
-# on the homelab. Nothing runs locally on the Mac except the Docker CLI,
-# and files NEVER land on the server — they stream straight back to this
-# Mac via `docker cp` (container filesystem only, removed afterwards).
+# on the homelab. Nothing runs locally on the Mac except the Docker CLI.
+# Files download into an HDD-backed buffer bind-mounted into the container
+# (NOT the container filesystem on the VM disk), then stream back to this
+# Mac via `docker cp`, and the buffer is emptied afterwards.
 #
 #   1. Fill in FOLDER_NAME and URLS below.
 #   2. Run: ./download.sh
@@ -21,13 +22,11 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 
 # Destination folder name inside ~/Downloads on THIS MAC.
-FOLDER_NAME="drawn together"
+FOLDER_NAME="estoy en la banda"
 
 # MediaFire folder/file URLs to download.
 URLS=(
-  "https://www.mediafire.com/folder/tefje4xp55j18/LCDLD+T1",
-  "https://www.mediafire.com/folder/82axxhsso9js8/LCDLD+T2",
-  "https://www.mediafire.com/folder/kvlz1xf3ywspz/LCDLD+T3"
+  "https://www.mediafire.com/folder/25r9ml0iza4br/Estoy+En+La+Banda"
 )
 
 # ---------------------------------------------------------------------------
@@ -37,6 +36,9 @@ IMAGE_NAME="mediafire-rs:latest"
 MAX_CONCURRENT=10                  # mdrs -m flag
 TRIES=1                            # mdrs -t flag
 MAC_DIR="$HOME/Downloads"          # local destination base on this Mac
+# Buffer dir INSIDE the Docker VM (HDD-backed NFS mount, not the VM disk).
+# Host path: 192.168.1.11:/mnt/pve/HDD/mediafire (dedicated export, .10 only).
+REMOTE_BUFFER="/mnt/mediafire"
 
 # ---------------------------------------------------------------------------
 # No config below this line
@@ -82,12 +84,16 @@ if ! touch "${LOCAL_DEST}/.mediafire-dl-write-test" 2>/dev/null; then
 fi
 rm -f "${LOCAL_DEST}/.mediafire-dl-write-test"
 
-# --- download into container filesystem (NO bind mount, nothing on host) ----
+# --- download into the HDD buffer (bind mount, never the VM disk) ---------
+# Guard first: without the NFS mount, Docker would auto-create a plain dir
+# on the VM disk and download there. The sentinel proves the real buffer.
 # -t allocates a pseudo-TTY so mdrs progress bars render and stream live
 # through `docker start -a`. Fixed --name makes orphans easy to find/kill
 # after a disconnect: docker rm -f mediafire-dl-tmp
+docker run --rm --entrypoint test -v "${REMOTE_BUFFER}:/downloads" "${IMAGE_NAME}" -f /downloads/.mediafire-buffer \
+  || fail "HDD buffer not mounted on remote daemon (${REMOTE_BUFFER}). Mount it: 192.168.1.11:/mnt/pve/HDD/mediafire"
 docker rm -f mediafire-dl-tmp >/dev/null 2>&1 || true
-CID="$(docker create -t --name mediafire-dl-tmp "${IMAGE_NAME}" \
+CID="$(docker create -t --name mediafire-dl-tmp -v "${REMOTE_BUFFER}:/downloads" "${IMAGE_NAME}" \
   -o /downloads -m "${MAX_CONCURRENT}" -t "${TRIES}" \
   "${FILTERED_URLS[@]}")"
 trap 'docker rm -f "${CID}" >/dev/null 2>&1 || true' EXIT
@@ -95,11 +101,16 @@ trap 'docker rm -f "${CID}" >/dev/null 2>&1 || true' EXIT
 log "downloading inside remote container ${CID}... (Ctrl-C kills + cleans up)"
 docker start -a "${CID}"
 
-# --- move files back to this Mac (container removed after = move, not copy) --
+# --- move files back to this Mac, then empty the buffer -------------------
 log "moving to Mac: ${LOCAL_DEST}"
 docker cp "${CID}:/downloads/." "${LOCAL_DEST}/"
+rm -f "${LOCAL_DEST}/.mediafire-buffer"   # sentinel must not land on the Mac
 
 trap - EXIT
+# `docker rm` does NOT clean bind contents — empty the buffer explicitly
+# (.[!.]* covers dotfiles but can never match . or ..; the sentinel is
+# deleted by the globs and recreated right after).
+docker run --rm --entrypoint sh -v "${REMOTE_BUFFER}:/downloads" "${IMAGE_NAME}" -c 'rm -rf /downloads/* /downloads/.[!.]*; touch /downloads/.mediafire-buffer' || true
 docker rm -f "${CID}" >/dev/null 2>&1 || true
 
-log "done. Files moved to ${LOCAL_DEST} (container removed, nothing left on server)"
+log "done. Files moved to ${LOCAL_DEST} (container removed, buffer emptied)"

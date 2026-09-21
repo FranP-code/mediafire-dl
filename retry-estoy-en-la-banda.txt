@@ -1,0 +1,13 @@
+# Retry list — Estoy En La Banda, 8 failed with IoError on 2026-09-20
+# (remote Docker VM disk was dying mid-download; re-run after infra is back)
+# Original folder: https://www.mediafire.com/folder/25r9ml0iza4br/Estoy+En+La+Banda
+# Usage: paste these into URLS=() in download.sh (or run mdrs against them)
+
+https://www.mediafire.com/file/1e7nn45xuag3y9q/Estoy_En_La_Banda_S02E05.-_El_Campamento_de_Rock_.Www.Serieslandia.Com.mp4/file
+https://www.mediafire.com/file/x32hkq07ka8r065/Estoy_En_La_Banda_S02E12.-_Weasels_en_el_Avi%C3%B3n.Www.Serieslandia.Com.mp4/file
+https://www.mediafire.com/file/hex3dypr1qi4tki/Estoy_En_La_Banda_S01E13.-_La_Gira_de_Iron_Weasel.Www.Serieslandia.Com.mp4/file
+https://www.mediafire.com/file/x993zjnifb3rxv2/Estoy_En_La_Banda_S01E04.-_Arlene%2C_la_Escandalosa.Www.Serieslandia.Com.mp4/file
+https://www.mediafire.com/file/syq8pu0t4h02x2p/Estoy_En_La_Banda_S02E04.-_Thunder_Monkeys.Www.Serieslandia.Com.mp4/file
+https://www.mediafire.com/file/01wtn23d6t0du48/Estoy_En_La_Banda_S02E17.-_Weasels_en_la_Escuela_.Www.Serieslandia.Com.mp4/file
+https://www.mediafire.com/file/wux2nehuq7nsa0u/Estoy_En_La_Banda_S01E01.-_Los_Weasels_Llegan_a_Casa.Www.Serieslandia.Com.mp4/file
+https://www.mediafire.com/file/9613nnpuqrapsht/Estoy_En_La_Banda_S02E11.-_No_Salgas_con_la_Hija_del_Director.Www.Serieslandia.Com.mp4/file
