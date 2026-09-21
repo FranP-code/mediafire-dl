@@ -139,6 +139,31 @@ job_path() {
   fi
 }
 
+# Safest re-fetch: delete dest copies of source files before copying, so a
+# previously interrupted fetch (power cut) can never leave mixed stale +
+# fresh files behind. The buffer (source of truth) is only cleaned AFTER a
+# successful cp, so this is always safe. Files unique to dest are kept.
+# Best-effort: never fails — worst case the cp below overwrites as before.
+clean_dest_from_source() {
+  local srcdir="$1" slug="$2" dest="$3" srclist f cleaned=0
+  if [[ "${srcdir}" == /buffer/* ]]; then
+    srclist="$(docker run --rm --entrypoint sh -v "${REMOTE_BUFFER}:/buffer" "${IMAGE_NAME}" -c "cd '/buffer/${slug}' && find . -type f" 2>/dev/null || true)"
+  else
+    srclist="$(docker run --rm --entrypoint sh -v "${REMOTE_BUFFER}:/downloads" "${IMAGE_NAME}" -c "cd /downloads && find . -type f ! -name '.mediafire-buffer'" 2>/dev/null || true)"
+  fi
+  while IFS= read -r f; do
+    [[ -n "${f}" ]] || continue
+    if [[ -e "${dest}/${f}" ]]; then
+      rm -f "${dest}/${f}" || true
+      cleaned=$((cleaned + 1))
+    fi
+  done <<< "${srclist}"
+  find "${dest}" -mindepth 1 -type d -empty -delete 2>/dev/null || true
+  if ((cleaned > 0)); then
+    log "removed ${cleaned} stale file(s) from ${dest} before copy"
+  fi
+}
+
 cmd_start() {
   need_config
   need_docker
@@ -212,6 +237,7 @@ fetch_one() {
   rm -f "${dest}/.mediafire-dl-write-test"
   srcdir="$(job_path "${job}")"
   slug="$(sanitize "${folder}")"
+  clean_dest_from_source "${srcdir}" "${slug}" "${dest}"
   log "moving ${job} (${srcdir}) -> ${dest}"
   docker cp "${job}:${srcdir}/." "${dest}/" || return 1
   # Sentinel can only arrive via the legacy /downloads fallback — keep it off the Mac.

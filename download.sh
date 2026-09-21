@@ -111,6 +111,14 @@ log "downloading inside remote container ${JOB} (${CID})... (Ctrl-C kills + clea
 docker start -a "${CID}"
 
 # --- move files back to this Mac, then remove the job's buffer subdir -----
+# Safest re-fetch: wipe dest copies of source files first, so an interrupted
+# earlier run can never leave mixed stale + fresh files. The buffer subdir
+# is only removed AFTER a successful cp, so this is always safe.
+docker run --rm --entrypoint sh -v "${REMOTE_BUFFER}:/buffer" "${IMAGE_NAME}" -c "cd '/buffer/${SLUG}' && find . -type f" 2>/dev/null | while IFS= read -r f; do
+  [[ -n "${f}" ]] || continue
+  [[ -e "${LOCAL_DEST}/${f}" ]] && rm -f "${LOCAL_DEST}/${f}" || true
+done
+find "${LOCAL_DEST}" -mindepth 1 -type d -empty -delete 2>/dev/null || true
 log "moving to Mac: ${LOCAL_DEST}"
 docker cp "${CID}:/buffer/${SLUG}/." "${LOCAL_DEST}/"
 

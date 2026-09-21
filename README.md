@@ -71,6 +71,7 @@ Notes:
 - Run several jobs at once: each `FOLDER_NAME` gets its own job (`mediafire-dl-<slug>`) and its own buffer subdir — they can't mix. `status` lists them all.
 - `fetch` refuses while the job is still running unless `--force`.
 - If the Mac disconnects mid-download, the job keeps running; reattach with `./mf.sh logs`, finish with `./mf.sh fetch`. Orphan cleanup: `./mf.sh kill`.
+- Safe re-fetch: before every copy, dest files that also exist in the buffer are deleted first, so an interrupted fetch (power cut) can never leave mixed stale + fresh files. The buffer is only cleaned after a successful copy, and files unique to the Mac folder are kept.
 
 ## Why remote?
 
