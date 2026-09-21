@@ -29,14 +29,13 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 
 # Destination folder name inside ~/Downloads on THIS MAC.
-FOLDER_NAME="ted"
+FOLDER_NAME="dbz-2"
 
 # MediaFire folder/file URLs to download.
-URLS=( 
-"https://www.mediafire.com/file/nm9enghvmwrb9zw/t12.part1.rar/file", 
-"https://www.mediafire.com/file/vng35xwdbwqe0di/t12.part2.rar/file", 
-"https://www.mediafire.com/file/s1jdwsq3ownk4un/t215.part1.rar/file", 
-"https://www.mediafire.com/file/6vc7sxd23duasjm/t215.part2.rar/file"
+URLS=(
+    "https://www.mediafire.com/folder/xzh01qkcfoews/OVAs_de_Dragon_Ball_Z",
+    "https://www.mediafire.com/folder/2x1r8vm7ebsc7/Películas_de_Dragon_Ball_Z",
+    "https://www.mediafire.com/folder/zw3kxyy5get8p/Especiales_de_Dragon_Ball_Z"
 )
 
 # ---------------------------------------------------------------------------
@@ -230,6 +229,45 @@ cmd_kill() {
   log "killed + removed ${job} (partial files discarded)"
 }
 
+cmd_retry() {
+  need_docker
+  local job folder slug failed n
+  job="$(resolve_job "${1:-}")"
+  if [[ "$(docker inspect --format '{{.State.Running}}' "${job}")" == "true" ]]; then
+    fail "job ${job} is still running. Wait for it to finish (or kill it) before retrying."
+  fi
+  folder="$(job_folder "${job}")"
+  [[ -n "${folder}" ]] || fail "job ${job} has no folder label; refusing to guess."
+  slug="$(sanitize "${folder}")"
+  [[ -n "${slug}" ]] || fail "folder sanitizes to empty."
+  # mdrs ends its log with a "Failed downloads:" section; each line ends
+  # with the file URL. Re-run exactly those (transient ApiError/NetworkError
+  # failures deserve a second chance with -t/--tries). 
+  failed="$(docker logs "${job}" 2>&1 | tr -d '\r' | sed -n '/^Failed downloads:$/,$p' | grep -o 'https\?://[^[:space:]]*$' | sort -u)"
+  [[ -n "${failed}" ]] || fail "no failed URLs parsed from ${job} logs — nothing to retry (or mdrs changed its output format)."
+  n="$(printf '%s\n' "${failed}" | grep -c .)"
+  log "retrying ${n} failed file(s) from ${job} into the same subdir..."
+  docker rm -f "${job}" >/dev/null
+  ensure_image
+  need_buffer
+  # Legacy jobs (pre-subdir layout) kept files at the buffer root: migrate
+  # leftovers into this job's subdir so fetch grabs everything together.
+  if ! docker run --rm --entrypoint test -v "${REMOTE_BUFFER}:/buffer" "${IMAGE_NAME}" -d "/buffer/${slug}" >/dev/null 2>&1; then
+    docker run --rm --entrypoint sh -v "${REMOTE_BUFFER}:/buffer" "${IMAGE_NAME}" -c "mkdir -p /buffer/${slug} && find /buffer -maxdepth 1 -type f ! -name '.mediafire-buffer' -exec mv -t /buffer/${slug}/ {} +" >/dev/null 2>&1 || true
+    log "migrated buffer-root leftovers into ${slug}/"
+  fi
+  local urls
+  mapfile -t urls <<< "${failed}"
+  docker create -t --name "${job}" \
+    --label "${JOB_LABEL}" \
+    --label "mediafire-dl.folder=${folder}" \
+    -v "${REMOTE_BUFFER}:/buffer" \
+    --entrypoint sh "${IMAGE_NAME}" \
+    -c "mkdir -p /buffer/${slug} && exec mdrs -o /buffer/${slug} -m ${MAX_CONCURRENT} -t ${TRIES} ${urls[*]}" >/dev/null
+  docker start "${job}" >/dev/null
+  log "retry running as ${job}. Watch: ./mf.sh logs ${job} | Fetch later: ./mf.sh fetch ${job}"
+}
+
 usage() {
   cat <<'EOF'
 Usage: ./mf.sh <command> [job] [--force]
@@ -239,6 +277,7 @@ Usage: ./mf.sh <command> [job] [--force]
   logs [job]     stream progress (Ctrl-C detaches, download continues)
   fetch [job]    move finished files to ~/Downloads/<folder>, remove job
   fetch [job] --force   move partial files now (kills a running job)
+  retry [job]    re-run only the failed files of a finished job (same subdir)
   kill [job]     abort + remove job (partial files discarded)
 
 job = container name/id or the FOLDER_NAME. Defaults to FOLDER_NAME in CONFIG.
@@ -250,6 +289,7 @@ case "${1:-}" in
   status) shift; cmd_status "$@" ;;
   logs)   shift; cmd_logs "$@" ;;
   fetch)  shift; cmd_fetch "$@" ;;
+  retry)  shift; cmd_retry "$@" ;;
   kill)   shift; cmd_kill "$@" ;;
   *) usage; exit 1 ;;
 esac

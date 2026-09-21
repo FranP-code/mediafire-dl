@@ -57,10 +57,13 @@ Same buffer design, but the download runs detached: start it, close the Mac, fet
 ./mf.sh start          # needs FOLDER_NAME + URLS set in mf.sh; Mac can sleep after this
 ./mf.sh status         # list jobs (running / exited)
 ./mf.sh logs           # stream progress (Ctrl-C detaches, download continues)
-./mf.sh fetch          # move finished files to ~/Downloads/<folder>, empty buffer, remove job
+./mf.sh fetch          # move finished files to ~/Downloads/<folder>, remove job subdir, remove job
 ./mf.sh fetch --force  # move partial files now (kills a running job)
-./mf.sh kill           # abort + remove job, empty buffer
+./mf.sh retry          # re-run only the failed files of a finished job (same subdir)
+./mf.sh kill           # abort + remove job, remove its subdir
 ```
+
+`retry` parses `mdrs`' trailing `Failed downloads:` section from the job's logs and starts a fresh container with just those URLs — existing files in the subdir stay put. (Transient `ApiError: NetworkError` failures like the odd part-file are exactly what it's for; raise `TRIES` if they keep recurring.)
 
 Notes:
 
